@@ -12,6 +12,12 @@ from torch import optim
 from sklearn.metrics import confusion_matrix, accuracy_score
 
 
+class ModelLockedError(Exception):
+    def __init__(self, file_path: str):
+        super(ModelLockedError, self).__init__(f"Cannot train model, since file \'{file_path}\' "
+                                               f"already exists! Please call \'model.unlock()\' to resume training.")
+
+
 class Checkpoint:
     def __init__(self, model, optimizer: optim.Optimizer):
         self.state_dict = model.state_dict()

@@ -1,10 +1,11 @@
 import os.path
 import time
 
-import numpy as np
-
 import file_operations as file_op
+
+import matplotlib.pyplot as plt
 import pandas as pd
+import numpy as np
 
 import torch
 from torch import nn
@@ -15,7 +16,7 @@ from torch.utils.data import TensorDataset, DataLoader
 from blitz.modules import BayesianLinear
 from blitz.utils import variational_estimator
 
-from model_library import HyperParams, History, AdditionalInformation, Checkpoint
+from model_library import HyperParams, History, AdditionalInformation, Checkpoint, ModelLockedError
 from prettytable import PrettyTable
 
 
@@ -67,9 +68,16 @@ class Model:
         self.info_file_path = self._file_dir_path + "info.json"
         self.info = AdditionalInformation(self.info_file_path)
 
+        self.locked = bool(file_op.is_file(self.model_save_path))
         self.net, self.optimizer = self.__construct_model(network, optimizer, input_shape)
 
+        if file_op.is_file(self.model_save_path):
+            self.load()
+
     def train(self, data, labels, number_of_epochs, *, batch_size: int=16, criterion=torch.nn.BCEWithLogitsLoss(), shuffle: bool=True):
+        if self.locked:
+            raise ModelLockedError(self.model_save_path)
+
         self.net.train()
         x = torch.tensor(data.values, dtype=torch.float32)
         y = torch.tensor(labels.values, dtype=torch.float32)
@@ -77,7 +85,7 @@ class Model:
         train_data = TensorDataset(x, y)
         data_loader_train = DataLoader(train_data, batch_size=batch_size, shuffle=shuffle)
 
-        number_of_mini_batches = len(data_loader_train) // batch_size + 1
+        number_of_mini_batches = len(train_data) // batch_size + 1
 
         for epoch_num in range(number_of_epochs):
             epoch_start_time = time.perf_counter()
@@ -98,8 +106,8 @@ class Model:
             self.history.step(float(running_loss), running_accuracy)
 
             self.save()
-            self.history.plot_loss(title="Model loss")
-            self.history.plot_accuracy(title="Model accuracy")
+            self.plot_loss()
+            self.plot_accuracy()
 
         return None
 
@@ -156,6 +164,10 @@ class Model:
         print("Model loaded!")
         return None
 
+    def unlock(self) -> None:
+        self.locked = False
+        return None
+
     def save_checkpoint(self) -> None:
         print('\033[96mSaving model checkpoint...\033[0m')  # CYAN TEXT
         checkpoint = Checkpoint(self.net, self.optimizer)
@@ -186,6 +198,18 @@ class Model:
         print("+---------------+------------+")
         return total_params
 
+    def plot_accuracy(self, title="Model accuracy over time") -> None:
+        self.history.plot_accuracy(title=title)
+        plt.savefig(self._file_dir_path + title.strip().lower())
+        plt.close()
+        return None
+
+    def plot_loss(self, title="Model loss over time") -> None:
+        self.history.plot_loss(title=title)
+        plt.savefig(self._file_dir_path + title.strip().lower())
+        plt.close()
+        return None
+
     def __construct_model(self, network: nn.Module, optimizer, input_shape: int=30):
         net_ = network(input_shape)
         optimizer_ = optimizer(net_.parameters(), lr=self.hyper_params.learning_rate)
@@ -200,7 +224,7 @@ class Model:
 
 
 def main():
-    bayesian_model = Model(BayesianNeuralNetwork, optim.Adam, "data/model_test.pth")
+    bayesian_model = Model(BayesianNeuralNetwork, optim.Adam, "data/small_model.pth")
     bayesian_model.count_parameters()
 
     train_data = pd.read_csv(CONTAINER_DIR + "creditcard.csv").astype(np.float32)
@@ -211,6 +235,7 @@ def main():
     x = train_data.drop("Class", axis=1)
     y = train_data["Class"]
 
+    bayesian_model.unlock()
     bayesian_model.train(x, y, number_of_epochs=10, batch_size=256)
 
 
