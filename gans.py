@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 from keras.utils.vis_utils import plot_model
 
 # Import balanced dataset
-df_balanced = pd.read_csv('balanced_data.csv')
+df_balanced = pd.read_csv('Datasets/balanced_data.csv')
 # Pick only the froud data
 froud = df_balanced[df_balanced["Class"] == 1]
 # pd datatrame of only the Vs

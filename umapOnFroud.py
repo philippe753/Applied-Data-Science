@@ -9,7 +9,7 @@ import pandas as pd
 
 # import balanced dataset:
 # df= pd.read_csv('creditcard.csv')
-df_balanced = pd.read_csv('balanced_data.csv')
+df_balanced = pd.read_csv('Datasets/balanced_data.csv')
 
 V_colums = df_balanced.columns[2:30]
 df_Vs = df_balanced[V_colums]  # pd datatrame of only the Vs
