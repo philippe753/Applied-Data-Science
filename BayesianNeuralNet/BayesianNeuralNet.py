@@ -11,6 +11,7 @@ import torch
 from torch import nn
 from torch import optim
 from torch.nn.functional import one_hot
+from torch.nn import Sigmoid
 from torch.utils.data import TensorDataset, DataLoader
 
 from blitz.modules import BayesianLinear
@@ -38,14 +39,15 @@ def load_samples(data: pd.DataFrame, n_samples: int) -> pd.DataFrame:
 
 @variational_estimator
 class BayesianNeuralNetwork(nn.Module):
-    def __init__(self, input_dim):
+    def __init__(self, input_dim, hidden_width: int=64, **kwargs):
         super().__init__()
-        self.bayes_linear1 = BayesianLinear(input_dim, 64)
-        self.bayes_linear2 = BayesianLinear(64, 2)
+        self.bayes_linear1 = BayesianLinear(input_dim, hidden_width)
+        self.bayes_linear2 = BayesianLinear(hidden_width, 2)
+        self.sigmoid = Sigmoid()
 
     def forward(self, x):
         x_ = self.bayes_linear1(x)
-        return self.bayes_linear2(x_)
+        return self.sigmoid(self.bayes_linear2(x_))
 
 
 class Model:
@@ -74,7 +76,8 @@ class Model:
         if file_op.is_file(self.model_save_path):
             self.load()
 
-    def train(self, data, labels, number_of_epochs, *, batch_size: int=16, criterion=torch.nn.BCEWithLogitsLoss(), shuffle: bool=True):
+    def train(self, data, labels, number_of_epochs, *, batch_size: int=16, criterion=torch.nn.BCELoss(),
+              shuffle: bool=True, sampling_number: int=3):
         if self.locked:
             raise ModelLockedError(self.model_save_path)
 
@@ -92,18 +95,21 @@ class Model:
             running_loss = 0.0
             running_accuracy = 0.0
             for i, (_data_points, _labels) in enumerate(data_loader_train):
-                loss = self.__train_mini_batch(_data_points, _labels, criterion=criterion)
+                loss, accuracy = self.__train_mini_batch(_data_points, _labels,
+                                                         criterion=criterion, sampling_number=sampling_number)
+                running_accuracy += accuracy[0]
                 running_loss += loss
                 print('-'*30)
                 print(f"Trained batch {i + 1} of {len(data_loader_train)}")
-                print(f"Loss: {loss}")
+                print(f"Loss: {loss}\tAccuracy: {accuracy}")
                 print('-' * 30)
 
             epoch_end_time = time.perf_counter()
 
             self.info.add_runtime(epoch_end_time - epoch_start_time)
             running_loss /= number_of_mini_batches
-            self.history.step(float(running_loss), running_accuracy)
+            running_accuracy /= number_of_mini_batches
+            self.history.step(float(running_loss), float(running_accuracy))
 
             self.save()
             self.plot_loss()
@@ -111,20 +117,24 @@ class Model:
 
         return None
 
-    def __train_mini_batch(self, _data_points, _labels, criterion=torch.nn.BCEWithLogitsLoss()) -> float:
+    def __train_mini_batch(self, _data_points, _labels, criterion=torch.nn.BCELoss(),
+                           sampling_number: int=3) -> (float, (float, float, float)):
         self.optimizer.zero_grad()
         one_hot_labels = one_hot(_labels.type(torch.long), 2).type(torch.float32)
-        loss = self.net.sample_elbo(inputs=_data_points, labels=one_hot_labels, criterion=criterion, sample_nbr=3)
+        loss = self.net.sample_elbo(inputs=_data_points, labels=one_hot_labels, criterion=criterion,
+                                    sample_nbr=sampling_number)
+
+        acc = self.test(data=_data_points, labels=one_hot_labels, samples=sampling_number)
         loss.backward()
         self.optimizer.step()
-        return loss
+        return loss, acc
 
-    def evaluate_regression(self, data, labels, samples: int, std_multiplier: float = 2) -> (float, float, float):
+    def test(self, data, labels, samples: int=3, std_multiplier: float = 2) -> (float, float, float):
         was_training = self.net.training
         self.net.eval()
 
         predictions = [self.net(data) for _ in range(samples)]
-        predictions = torch.FloatTensor(predictions)
+        predictions = torch.stack(predictions)
 
         means = predictions.mean(axis=0)
         stds = predictions.std(axis=0)
@@ -132,7 +142,7 @@ class Model:
         ci_upper = means + (std_multiplier * stds)
         ci_lower = means - (std_multiplier * stds)
 
-        ic_acc = (ci_lower <= labels).float().mean()
+        ic_acc = (ci_lower <= labels) * (ci_upper >= labels)
         ic_acc = ic_acc.float().mean()
 
         mean_ci_upper = (ci_upper >= labels).float().mean()
@@ -211,7 +221,7 @@ class Model:
         return None
 
     def __construct_model(self, network: nn.Module, optimizer, input_shape: int=30):
-        net_ = network(input_shape)
+        net_ = network(input_shape, hidden_width=self.hyper_params.hidden_width)
         optimizer_ = optimizer(net_.parameters(), lr=self.hyper_params.learning_rate)
         return net_, optimizer_
 
@@ -224,19 +234,18 @@ class Model:
 
 
 def main():
-    bayesian_model = Model(BayesianNeuralNetwork, optim.Adam, "data/small_model.pth")
+    hyper_params = HyperParams(hidden_width=128)
+
+    bayesian_model = Model(BayesianNeuralNetwork, optim.Adam, "data/medium_model.pth", hyper_params=hyper_params)
     bayesian_model.count_parameters()
 
     train_data = pd.read_csv(CONTAINER_DIR + "creditcard.csv").astype(np.float32)
-
-    # fraud_samples = train_data.where(train_data["Class"] == 1).dropna()
-    # non_fraud_samples = train_data.where(train_data["Class"] == 0).dropna()
 
     x = train_data.drop("Class", axis=1)
     y = train_data["Class"]
 
     bayesian_model.unlock()
-    bayesian_model.train(x, y, number_of_epochs=10, batch_size=256)
+    bayesian_model.train(x, y, number_of_epochs=300, batch_size=256)
 
 
 if __name__ == "__main__":

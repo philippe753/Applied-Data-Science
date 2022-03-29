@@ -79,13 +79,14 @@ class HyperParams:
     def __init__(self, num_layers: int = 2, dropout: float = 0,
                  device="cuda", learning_rate: float = 0.01, optimizer=optim.Adam,
                  l2_regularisation=0, l1_regularisation=0,
-                 patience=5, early_stopping_mode="moving_average"):
+                 patience=5, early_stopping_mode="moving_average", hidden_width: int=64):
         # General parameters
         self.dropout = dropout
         self.learning_rate = learning_rate
         self.l1_regularisation = l1_regularisation
         self.l2_regularisation = l2_regularisation
         self.device = torch.device(device if torch.cuda.is_available() else "cpu")
+        self.hidden_width = hidden_width
 
         # Validation parameters
         self.patience = patience
@@ -209,7 +210,7 @@ class History:
         figure_loss = self.loss.copy()
 
         for i, value in enumerate(self.loss):
-            figure_loss[i] = round(value, 3)
+            figure_loss[i] = round(value, 3)*100
 
         ax = axes
         if axes is None:
@@ -231,7 +232,7 @@ class History:
         figure_acc = self.accuracy.copy()
 
         for i, value in enumerate(self.accuracy):
-            figure_acc[i] = round(value, 3)
+            figure_acc[i] = round(value, 3)*100
 
         ax = axes
         if axes is None:
