@@ -23,7 +23,7 @@ from model_library import HyperParams, History, AdditionalInformation, Checkpoin
 from prettytable import PrettyTable
 
 
-CONTAINER_DIR = os.path.dirname(os.path.dirname(os.path.dirname(__file__))) + "/"
+CONTAINER_DIR = os.path.dirname(os.path.dirname(__file__)) + "/"
 
 
 def method_print_decorator(func: callable, symbol='-', number_of_symbol_per_line: int = 40) -> callable:
@@ -66,6 +66,9 @@ class Model:
         self.model_save_path = self._file_dir_path + "model.pth"
         self.__make_dir()
 
+        self.validation_save_path = self._file_dir_path + "validation_history.csv"
+        self.validation_history = History(self.validation_save_path, label="validation")
+
         self.history_save_path = self._file_dir_path + "history.csv"
         self.history = History(self.history_save_path, label="Training")
 
@@ -79,39 +82,84 @@ class Model:
             self.load()
 
     def train(self, data, labels, number_of_epochs, *, batch_size: int = 16, criterion=torch.nn.BCELoss(),
-              shuffle: bool = True, sampling_number: int = 3):
+              shuffle: bool = True, sampling_number: int = 3, k_fold_samples: int = 3):
         if self.locked:
             raise ModelLockedError(self.model_save_path)
 
+        class_labels = list(set(labels))
         self.net.train()
-        x = torch.tensor(data.values, dtype=torch.float32)
-        y = torch.tensor(labels.values, dtype=torch.float32)
 
-        train_data = TensorDataset(x, y)
-        data_loader_train = DataLoader(train_data, batch_size=batch_size, shuffle=shuffle)
+        x_split_by_labels = [data.where(labels == num).dropna() for num in class_labels]
+        x_split_by_labels = [torch.tensor(x.values, dtype=torch.float32) for x in x_split_by_labels]
+        y_split_by_labels = [labels.where(labels == num).dropna() for num in class_labels]
+        y_split_by_labels = [torch.tensor(y.values, dtype=torch.float32) for y in y_split_by_labels]
 
-        number_of_mini_batches = len(train_data) // batch_size + 1
+        y_split_by_labels = [one_hot(y.type(torch.long), 2).type(torch.float32) for y in y_split_by_labels]
+
+        minimum_num_batches = min(map(len, y_split_by_labels)) // batch_size + 1
+
+        while minimum_num_batches < k_fold_samples:
+            batch_size = int(batch_size * 0.8)
+            minimum_num_batches = min(map(len, y_split_by_labels)) // batch_size + 1
+        print(f"batch size: {batch_size}")
+
+        train_data_by_label = [TensorDataset(x_split_by_labels[i], y_split_by_labels[i])
+                               for i in range(len(class_labels))]
+        data_loaders_by_label = [DataLoader(train_data_by_label[i], batch_size=batch_size, shuffle=shuffle)
+                                 for i in range(len(class_labels))]
+
+        num_to_sample_by_label = [int((1 / k_fold_samples) * len(data_loaders_by_label[i]))
+                                  for i in range(len(class_labels))]
+
+        loss_scaling_factor = k_fold_samples * len(class_labels) * sum(num_to_sample_by_label)
 
         for epoch_num in range(number_of_epochs):
             epoch_start_time = time.perf_counter()
-            running_loss = 0.0
-            running_accuracy = 0.0
-            for i, (_data_points, _labels) in enumerate(data_loader_train):
-                loss, accuracy = self.__train_mini_batch(_data_points, _labels,
-                                                         criterion=criterion, sampling_number=sampling_number)
-                running_accuracy += accuracy[0]
-                running_loss += loss
-                print('-'*30)
-                print(f"Trained batch {i + 1} of {len(data_loader_train)}")
-                print(f"Loss: {loss}\tAccuracy: {accuracy}")
-                print('-' * 30)
 
+            train_losses = [[0.0 for _ in class_labels] for _ in range(k_fold_samples)]
+            train_accuracies = [[0.0 for _ in class_labels] for _ in range(k_fold_samples)]
+            validation_losses = [[0.0 for _ in class_labels] for _ in range(k_fold_samples)]
+            validation_accuracies = [[0.0 for _ in class_labels] for _ in range(k_fold_samples)]
+
+            for k_step in range(k_fold_samples):
+                print(f"Evaluation k-fold iter: {k_step + 1} of {k_fold_samples}")
+                for i, data_loader in enumerate(data_loaders_by_label):
+                    iterable_dataloader = iter(data_loader)
+
+                    for j in range(num_to_sample_by_label[i]):
+                        x_val, y_val = next(iterable_dataloader)
+                        self.net.eval()
+                        loss_val, acc_val = self.__test_mini_batch(x_val, y_val,
+                                                                   criterion=criterion, sampling_number=sampling_number)
+                        self.net.train()
+                        validation_losses[k_step][i] += loss_val
+                        validation_accuracies[k_step][i] += acc_val[0]
+
+                    for j in range(num_to_sample_by_label[i] * (k_fold_samples - 1)):
+                        x_train, y_train = next(iterable_dataloader)
+                        loss_train, acc_train = self.__train_mini_batch(x_train, y_train,
+                                                                        criterion=criterion,
+                                                                        sampling_number=sampling_number)
+                        train_losses[k_step][i] += loss_train
+                        train_accuracies[k_step][i] += acc_train[0]
+
+            train_loss = sum(sum(losses) for losses in train_losses) / loss_scaling_factor
+            train_accuracy = sum(sum(accuracies) for accuracies in train_accuracies) / loss_scaling_factor
+
+            validation_loss = (sum(sum(losses) for losses in validation_losses) * (k_fold_samples - 1)) / loss_scaling_factor
+            validation_accuracy = (sum(sum(accuracies) for accuracies in validation_accuracies) * (k_fold_samples - 1)) / loss_scaling_factor
+
+            print('-' * 30)
+            print(f"Sampling # batches per label: {num_to_sample_by_label}")
+            print(f"Trained epoch {epoch_num + 1} of {number_of_epochs}")
+            print(f"Train | Loss: {train_loss}\tAccuracy: {train_accuracy}")
+            print(f"Valid | Loss: {validation_loss}\tAccuracy: {validation_accuracy}")
+            print('-' * 30)
             epoch_end_time = time.perf_counter()
 
             self.info.add_runtime(epoch_end_time - epoch_start_time)
-            running_loss /= number_of_mini_batches
-            running_accuracy /= number_of_mini_batches
-            self.history.step(float(running_loss), float(running_accuracy))
+            self.history.step(float(train_loss), float(train_accuracy))
+            self.validation_history.step(float(validation_loss), float(validation_accuracy))
 
             self.save()
             self.plot_loss()
@@ -122,16 +170,24 @@ class Model:
     def __train_mini_batch(self, _data_points, _labels, criterion=torch.nn.BCELoss(),
                            sampling_number: int = 3) -> (float, (float, float, float)):
         self.optimizer.zero_grad()
-        one_hot_labels = one_hot(_labels.type(torch.long), 2).type(torch.float32)
-        loss = self.net.sample_elbo(inputs=_data_points, labels=one_hot_labels, criterion=criterion,
+
+        loss = self.net.sample_elbo(inputs=_data_points, labels=_labels, criterion=criterion,
                                     sample_nbr=sampling_number)
 
-        acc = self.test(data=_data_points, labels=one_hot_labels, samples=sampling_number)
+        acc = self.test(data=_data_points, labels=_labels, samples=sampling_number)
         loss.backward()
         self.optimizer.step()
         return loss, acc
 
-    def test(self, data, labels, samples: int = 3, std_multiplier: float = 2) -> (float, float, float):
+    def __test_mini_batch(self, _data_points, _labels, criterion=torch.nn.BCELoss(),
+                          sampling_number: int = 3) -> (float, (float, float, float)):
+        loss = self.net.sample_elbo(inputs=_data_points, labels=_labels, criterion=criterion,
+                                    sample_nbr=sampling_number)
+        acc = self.test(data=_data_points, labels=_labels, samples=sampling_number)
+
+        return loss, acc
+
+    def test(self, data, labels, samples: int = 3, std_multiplier: float = 2, criterion=nn.BCELoss) -> (float, float, float):
         was_training = self.net.training
         self.net.eval()
 
@@ -189,6 +245,7 @@ class Model:
     def save_model_history(self) -> None:
         print('\033[94mSaving model history...\033[0m')  # BLUE TEXT
         self.history.save()
+        self.validation_history.save()
         return None
 
     def save_info(self) -> None:
@@ -211,13 +268,15 @@ class Model:
         return total_params
 
     def plot_accuracy(self, title="Model accuracy over time") -> None:
-        self.history.plot_accuracy(title=title)
+        ax = self.history.plot_accuracy(title=title)
+        self.validation_history.plot_accuracy(axes=ax, title=title)
         plt.savefig(self._file_dir_path + title.strip().lower())
         plt.close()
         return None
 
     def plot_loss(self, title="Model loss over time") -> None:
-        self.history.plot_loss(title=title)
+        ax = self.history.plot_loss(title=title)
+        self.validation_history.plot_loss(axes=ax, title=title)
         plt.savefig(self._file_dir_path + title.strip().lower())
         plt.close()
         return None
@@ -237,12 +296,14 @@ class Model:
 
 
 def main():
-    hyper_params = HyperParams(hidden_width=128)
+    hyper_params = HyperParams(hidden_width=128, learning_rate=0.001)
 
-    bayesian_model = Model(BayesianNeuralNetwork, optim.Adam, "data/medium_model.pth", hyper_params=hyper_params)
+    bayesian_model = Model(BayesianNeuralNetwork, optim.Adam, "data/medium_model_with_scv.pth", hyper_params=hyper_params)
     bayesian_model.count_parameters()
 
-    train_data = pd.read_csv(CONTAINER_DIR + "creditcard.csv").astype(np.float32)
+    data_path = CONTAINER_DIR + "/Datasets/creditcard.csv"
+
+    train_data = pd.read_csv(data_path).astype(np.float32)
 
     x = train_data.drop("Class", axis=1)
     y = train_data["Class"]
