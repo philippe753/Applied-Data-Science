@@ -1,6 +1,8 @@
 import os.path
 import time
 
+from typing import Type
+
 import file_operations as file_op
 
 import matplotlib.pyplot as plt
@@ -39,7 +41,7 @@ def load_samples(data: pd.DataFrame, n_samples: int) -> pd.DataFrame:
 
 @variational_estimator
 class BayesianNeuralNetwork(nn.Module):
-    def __init__(self, input_dim, hidden_width: int=64, **kwargs):
+    def __init__(self, input_dim, hidden_width: int = 64, **kwargs):
         super().__init__()
         self.bayes_linear1 = BayesianLinear(input_dim, hidden_width)
         self.bayes_linear2 = BayesianLinear(hidden_width, 2)
@@ -51,9 +53,9 @@ class BayesianNeuralNetwork(nn.Module):
 
 
 class Model:
-    def __init__(self, network: nn.Module, optimizer: optim.Optimizer, file_path: str, *,
-                 hyper_params: HyperParams=HyperParams(),
-                 input_shape: int=30):
+    def __init__(self, network: Type[nn.Module], optimizer: Type[optim.Optimizer], file_path: str, *,
+                 hyper_params: HyperParams = HyperParams(),
+                 input_shape: int = 30):
         # Model info
         self.net = network
         self.optimizer = optimizer
@@ -76,8 +78,8 @@ class Model:
         if file_op.is_file(self.model_save_path):
             self.load()
 
-    def train(self, data, labels, number_of_epochs, *, batch_size: int=16, criterion=torch.nn.BCELoss(),
-              shuffle: bool=True, sampling_number: int=3):
+    def train(self, data, labels, number_of_epochs, *, batch_size: int = 16, criterion=torch.nn.BCELoss(),
+              shuffle: bool = True, sampling_number: int = 3):
         if self.locked:
             raise ModelLockedError(self.model_save_path)
 
@@ -118,7 +120,7 @@ class Model:
         return None
 
     def __train_mini_batch(self, _data_points, _labels, criterion=torch.nn.BCELoss(),
-                           sampling_number: int=3) -> (float, (float, float, float)):
+                           sampling_number: int = 3) -> (float, (float, float, float)):
         self.optimizer.zero_grad()
         one_hot_labels = one_hot(_labels.type(torch.long), 2).type(torch.float32)
         loss = self.net.sample_elbo(inputs=_data_points, labels=one_hot_labels, criterion=criterion,
@@ -129,15 +131,15 @@ class Model:
         self.optimizer.step()
         return loss, acc
 
-    def test(self, data, labels, samples: int=3, std_multiplier: float = 2) -> (float, float, float):
+    def test(self, data, labels, samples: int = 3, std_multiplier: float = 2) -> (float, float, float):
         was_training = self.net.training
         self.net.eval()
 
         predictions = [self.net(data) for _ in range(samples)]
         predictions = torch.stack(predictions)
 
-        means = predictions.mean(axis=0)
-        stds = predictions.std(axis=0)
+        means = predictions.mean(dim=0)
+        stds = predictions.std(dim=0)
 
         ci_upper = means + (std_multiplier * stds)
         ci_lower = means - (std_multiplier * stds)
@@ -220,9 +222,10 @@ class Model:
         plt.close()
         return None
 
-    def __construct_model(self, network: nn.Module, optimizer, input_shape: int=30):
-        net_ = network(input_shape, hidden_width=self.hyper_params.hidden_width)
-        optimizer_ = optimizer(net_.parameters(), lr=self.hyper_params.learning_rate)
+    def __construct_model(self, network: Type[nn.Module], optimizer: Type[optim.Optimizer],
+                          input_shape: int = 30):
+        net_ = network(input_shape, hidden_width=self.hyper_params.hidden_width)  # noqa
+        optimizer_ = optimizer(net_.parameters(), lr=self.hyper_params.learning_rate)  # noqa
         return net_, optimizer_
 
     def __make_dir(self) -> None:
