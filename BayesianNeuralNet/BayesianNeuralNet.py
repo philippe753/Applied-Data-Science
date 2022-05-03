@@ -129,7 +129,7 @@ class Model:
         self.optimizer.step()
         return loss, acc
 
-    def test(self, data, labels, samples: int=3, std_multiplier: float = 2) -> (float, float, float):
+    def test(self, data, labels, samples: int=30, std_multiplier: float = 1.96) -> (float, float, float):
         was_training = self.net.training
         self.net.eval()
 
@@ -151,7 +151,7 @@ class Model:
         if was_training:
             self.net.train()
 
-        return ic_acc, mean_ci_upper, mean_ci_lower
+        return ic_acc, mean_ci_lower, mean_ci_upper
 
     @method_print_decorator
     def save(self) -> None:
@@ -236,13 +236,13 @@ class Model:
 def main():
     hyper_params = HyperParams(hidden_width=128)
 
-    bayesian_model = Model(BayesianNeuralNetwork, optim.Adam, "data/medium_model.pth", hyper_params=hyper_params)
-    bayesian_model.count_parameters()
-
     train_data = pd.read_csv(CONTAINER_DIR + "creditcard.csv").astype(np.float32)
 
     x = train_data.drop("Class", axis=1)
     y = train_data["Class"]
+
+    bayesian_model = Model(BayesianNeuralNetwork, optim.Adam, "data/large_model.pth", hyper_params=hyper_params)
+    bayesian_model.count_parameters()
 
     bayesian_model.unlock()
     bayesian_model.train(x, y, number_of_epochs=300, batch_size=256)
