@@ -24,7 +24,7 @@ class ConditionalGAN:
         self.hyper_parameters = hyper_parameters
 
         opt = keras.optimizers.Adam(lr=hyper_parameters.learning_rate)
-        self.generator.compile(loss=self.custom_loss, optimizer=opt, metrics='accuracy')
+        self.generator.compile(loss="binary_crossentropy", optimizer=opt, metrics='accuracy')
 
         self.model = combine_gan(g_model, d_model)
         self.model.trainable = True
@@ -61,9 +61,9 @@ class ConditionalGAN:
     def feature_matching_loss(self, y_true, y_pred):
         """ Binary Cross Entropy Feature Matching Loss """
         intermediate_layer_model = self.intermediate_layer()
-        f_x_given_y = intermediate_layer_model.predict(y_true)
 
-        f_g_of_z = intermediate_layer_model.predict(y_pred)
+        f_x_given_y = intermediate_layer_model(y_pred, y_true)
+        f_g_of_z = intermediate_layer_model(y_pred)
 
         f_x_given_y = backend.cast_to_floatx(f_x_given_y)
         f_g_of_z = backend.cast_to_floatx(f_g_of_z)
@@ -82,8 +82,10 @@ class ConditionalGAN:
 
     def intermediate_layer(self):
         layer_name = 'intermediate_layer'
+
+        keras.utils.plot_model(self.discriminator, to_file="model3.png", show_shapes=True, show_dtype=True)
         intermediate_layer_model = Model(inputs=self.discriminator.input,
-                                         outputs=self.discriminator.get_layer(layer_name).output)
+                                         outputs=self.discriminator.output)
         return intermediate_layer_model
 
     @staticmethod

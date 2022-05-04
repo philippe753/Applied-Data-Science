@@ -76,28 +76,21 @@ def discriminator_model():
 
 
 def discriminator(n_classes: int=2):  # in_shape=(1,28)
-
-    model = keras.Sequential(
-        [
-            layers.Dense(128, activation='relu'),
-            layers.Dropout(0.2),
-            layers.Dense(64, activation='relu'),
-            layers.Dropout(0.2),
-            layers.Dense(32, activation='relu', name='intermediate_layer'),
-            layers.Dense(1, activation='sigmoid')
-
-        ]
-    )
-
-    gen_sample = layers.Input(shape=(28))
-    label = layers.Input(shape=(1,), dtype='int32')
-    label_embedding = layers.Flatten()(
-        layers.Embedding(n_classes, 28)(label))
-
+    gen_sample = layers.Input(shape=(28), name="gen_sample")
+    label = layers.Input(shape=(1,), dtype='int32', name="label")
+    label_embedding = layers.Flatten()(layers.Embedding(n_classes, 28)(label))
     model_input = layers.multiply([gen_sample, label_embedding])
-    validity = model(model_input)
+
+    layer = layers.Dense(128, activation='relu')(model_input)
+    layer = layers.Dropout(0.2)(layer)
+    layer = layers.Dense(64, activation='relu')(layer)
+    layer = layers.Dropout(0.2)(layer)
+    layer = layers.Dense(32, activation='relu', name='intermediate_layer')(layer)
+    final = layers.Dense(1, activation='sigmoid')(layer)
+
     model_dis = Model(inputs=[gen_sample, label],
-                      outputs=validity, name="Discriminator")
+                      outputs=final, name="Discriminator")
+
     opt = keras.optimizers.Adam(lr=1e-5)
     model_dis.compile(loss='binary_crossentropy',
                       optimizer=opt, metrics='accuracy')
