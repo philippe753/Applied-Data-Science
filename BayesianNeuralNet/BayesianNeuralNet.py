@@ -3,6 +3,8 @@ import time
 
 from typing import Type
 
+from collections import Counter
+
 import file_operations as file_op
 
 import matplotlib.pyplot as plt
@@ -12,15 +14,14 @@ import numpy as np
 import torch
 from torch import nn
 from torch import optim
-from torch.nn.functional import one_hot
 from torch.nn import Sigmoid
-from torch.utils.data import TensorDataset, DataLoader
 
 from blitz.modules import BayesianLinear
 from blitz.utils import variational_estimator
 
 from model_library import HyperParams, History, AdditionalInformation, Checkpoint, ModelLockedError
 from prettytable import PrettyTable
+from sklearn.model_selection import train_test_split, StratifiedKFold
 
 
 CONTAINER_DIR = os.path.dirname(os.path.dirname(__file__)) + "/"
@@ -43,13 +44,14 @@ def load_samples(data: pd.DataFrame, n_samples: int) -> pd.DataFrame:
 class BayesianNeuralNetwork(nn.Module):
     def __init__(self, input_dim, hidden_width: int = 64, **kwargs):
         super().__init__()
+        print("INPUT DIM:", input_dim)
         self.bayes_linear1 = BayesianLinear(input_dim, hidden_width)
-        self.bayes_linear2 = BayesianLinear(hidden_width, 2)
+        self.bayes_linear2 = BayesianLinear(hidden_width, 1)
         self.sigmoid = Sigmoid()
 
     def forward(self, x):
         x_ = self.bayes_linear1(x)
-        return self.sigmoid(self.bayes_linear2(x_))
+        return self.sigmoid(self.bayes_linear2(x_)).squeeze(dim=1)
 
 
 class Model:
@@ -86,71 +88,55 @@ class Model:
         if self.locked:
             raise ModelLockedError(self.model_save_path)
 
-        class_labels = list(set(labels))
+        num_points = data.shape[0]
+
         self.net.train()
 
-        x_split_by_labels = [data.where(labels == num).dropna() for num in class_labels]
-        x_split_by_labels = [torch.tensor(x.values, dtype=torch.float32) for x in x_split_by_labels]
-        y_split_by_labels = [labels.where(labels == num).dropna() for num in class_labels]
-        y_split_by_labels = [torch.tensor(y.values, dtype=torch.float32) for y in y_split_by_labels]
+        skf = StratifiedKFold(n_splits=k_fold_samples, shuffle=shuffle)
 
-        y_split_by_labels = [one_hot(y.type(torch.long), 2).type(torch.float32) for y in y_split_by_labels]
-
-        minimum_num_batches = min(map(len, y_split_by_labels)) // batch_size + 1
-
-        while minimum_num_batches < k_fold_samples:
-            batch_size = int(batch_size * 0.8)
-            minimum_num_batches = min(map(len, y_split_by_labels)) // batch_size + 1
-        print(f"batch size: {batch_size}")
-
-        train_data_by_label = [TensorDataset(x_split_by_labels[i], y_split_by_labels[i])
-                               for i in range(len(class_labels))]
-        data_loaders_by_label = [DataLoader(train_data_by_label[i], batch_size=batch_size, shuffle=shuffle)
-                                 for i in range(len(class_labels))]
-
-        num_to_sample_by_label = [int((1 / k_fold_samples) * len(data_loaders_by_label[i]))
-                                  for i in range(len(class_labels))]
-
-        loss_scaling_factor = k_fold_samples * len(class_labels) * sum(num_to_sample_by_label)
+        loss_scaling_factor = len(set(labels)) * k_fold_samples * num_points
 
         for epoch_num in range(number_of_epochs):
             epoch_start_time = time.perf_counter()
 
-            train_losses = [[0.0 for _ in class_labels] for _ in range(k_fold_samples)]
-            train_accuracies = [[0.0 for _ in class_labels] for _ in range(k_fold_samples)]
-            validation_losses = [[0.0 for _ in class_labels] for _ in range(k_fold_samples)]
-            validation_accuracies = [[0.0 for _ in class_labels] for _ in range(k_fold_samples)]
-
-            for k_step in range(k_fold_samples):
+            train_losses = [0.0 for _ in range(k_fold_samples)]
+            train_accuracies = [0.0 for _ in range(k_fold_samples)]
+            validation_losses = [0.0 for _ in range(k_fold_samples)]
+            validation_accuracies = [0.0 for _ in range(k_fold_samples)]
+            k_step = 0
+            for train_index, test_index in skf.split(data, labels):
                 print(f"Evaluation k-fold iter: {k_step + 1} of {k_fold_samples}")
-                for i, data_loader in enumerate(data_loaders_by_label):
-                    iterable_dataloader = iter(data_loader)
+                x_train_fold, x_test_fold = data[train_index], data[test_index]
+                y_train_fold, y_test_fold = labels[train_index], labels[test_index]
 
-                    for j in range(num_to_sample_by_label[i]):
-                        x_val, y_val = next(iterable_dataloader)
-                        self.net.eval()
-                        loss_val, acc_val = self.__test_mini_batch(x_val, y_val,
-                                                                   criterion=criterion, sampling_number=sampling_number)
-                        self.net.train()
-                        validation_losses[k_step][i] += loss_val
-                        validation_accuracies[k_step][i] += acc_val[0]
+                x_train_fold = torch.Tensor(x_train_fold).to(torch.float)
+                x_test_fold = torch.Tensor(x_test_fold).to(torch.float)
 
-                    for j in range(num_to_sample_by_label[i] * (k_fold_samples - 1)):
-                        x_train, y_train = next(iterable_dataloader)
-                        loss_train, acc_train = self.__train_mini_batch(x_train, y_train,
-                                                                        criterion=criterion,
-                                                                        sampling_number=sampling_number)
-                        train_losses[k_step][i] += loss_train
-                        train_accuracies[k_step][i] += acc_train[0]
+                y_train_fold = torch.as_tensor(y_train_fold, dtype=torch.float32)
+                y_test_fold = torch.as_tensor(y_test_fold, dtype=torch.float32)
 
-            train_loss = sum(sum(losses) for losses in train_losses) / loss_scaling_factor
-            train_accuracy = sum(sum(accuracies) for accuracies in train_accuracies) / loss_scaling_factor
+                self.net.train()
+                loss_train, acc_train = self.__train_mini_batch(x_train_fold, y_train_fold,
+                                                                criterion=criterion, sampling_number=sampling_number)
 
-            validation_loss = (sum(sum(losses) for losses in validation_losses) * (k_fold_samples - 1)) / loss_scaling_factor
-            validation_accuracy = (sum(sum(accuracies) for accuracies in validation_accuracies) * (k_fold_samples - 1)) / loss_scaling_factor
+                self.net.eval()
+                loss_val, acc_val = self.__test_mini_batch(x_test_fold, y_test_fold,
+                                                           criterion=criterion, sampling_number=sampling_number)
+
+                validation_losses[k_step] += loss_val
+                validation_accuracies[k_step] += acc_val[0]
+                train_losses[k_step] += loss_train
+                train_accuracies[k_step] += acc_train[0]
+
+                k_step += 1
+
+            train_loss = sum(train_losses) / loss_scaling_factor
+            train_accuracy = 100 * sum(train_accuracies) / len(train_accuracies)
+
+            validation_loss = sum(validation_losses) / loss_scaling_factor
+            validation_accuracy = 100 * sum(validation_accuracies) / len(train_accuracies)
 
             print('-' * 30)
-            print(f"Sampling # batches per label: {num_to_sample_by_label}")
             print(f"Trained epoch {epoch_num + 1} of {number_of_epochs}")
             print(f"Train | Loss: {train_loss}\tAccuracy: {train_accuracy}")
             print(f"Valid | Loss: {validation_loss}\tAccuracy: {validation_accuracy}")
@@ -167,13 +153,82 @@ class Model:
 
         return None
 
+    def train_subsampled(self, data, labels, number_of_epochs, *, batch_size: int=16, criterion=torch.nn.BCELoss(),
+                         shuffle: bool = True, sampling_number: int = 3, k_fold_samples: int = 3):
+        if self.locked:
+            raise ModelLockedError(self.model_save_path)
+
+        classes = list(set(labels))
+
+        self.net.train()
+
+        class_count = Counter(labels)
+        minority_label = min(class_count, key=class_count.get)
+        majority_label = max(class_count, key=class_count.get)
+
+        minority_data = data[labels == minority_label]
+        minority_labels = labels[labels == minority_label]
+
+        majority_data = data[labels == majority_label]
+        majority_labels = labels[labels == majority_label]
+
+        minority_data = np.column_stack((minority_data, minority_labels))
+        majority_data = np.column_stack((majority_data, majority_labels))
+
+        end_of_array = min(minority_data.shape[0], batch_size // 2)
+
+        train_percent = int(0.8 * end_of_array)
+
+        for epoch_num in range(number_of_epochs):
+            epoch_start_time = time.perf_counter()
+
+            np.random.shuffle(minority_data)
+            np.random.shuffle(majority_data)
+
+            x_train = np.vstack((minority_data[:train_percent, :-1], majority_data[:train_percent, :-1]))
+            y_train = np.hstack((minority_data[:train_percent, -1], majority_data[:train_percent, -1]))
+
+            x_test = np.vstack((minority_data[train_percent:end_of_array, :-1],
+                                     majority_data[train_percent:end_of_array, :-1]))
+            y_test = np.hstack((minority_data[train_percent:end_of_array, -1],
+                                     majority_data[train_percent:end_of_array, -1]))
+
+            x_train = torch.Tensor(x_train).to(torch.float)
+            x_test = torch.Tensor(x_test).to(torch.float)
+
+            y_train = torch.as_tensor(y_train, dtype=torch.float32)
+            y_test = torch.as_tensor(y_test, dtype=torch.float32)
+
+            self.net.train()
+            loss_train, acc_train = self.__train_mini_batch(x_train, y_train,
+                                                            criterion=criterion, sampling_number=sampling_number)
+
+            self.net.eval()
+            loss_val, acc_val = self.__test_mini_batch(x_test, y_test,
+                                                       criterion=criterion, sampling_number=sampling_number)
+
+            print('-' * 30)
+            print(f"Trained epoch {epoch_num + 1} of {number_of_epochs}")
+            print(f"Train | Loss: {loss_train}\tAccuracy: {acc_train[0]}")
+            print(f"Valid | Loss: {loss_val}\tAccuracy: {acc_val[0]}")
+            print('-' * 30)
+            epoch_end_time = time.perf_counter()
+
+            self.info.add_runtime(epoch_end_time - epoch_start_time)
+            self.history.step(float(loss_train), float(acc_train[0]))
+            self.validation_history.step(float(loss_val), float(acc_val[0]))
+
+            self.save()
+            self.plot_loss()
+            self.plot_accuracy()
+
+        return None
+
     def __train_mini_batch(self, _data_points, _labels, criterion=torch.nn.BCELoss(),
                            sampling_number: int = 3) -> (float, (float, float, float)):
         self.optimizer.zero_grad()
 
-        loss = self.net.sample_elbo(inputs=_data_points, labels=_labels, criterion=criterion,
-                                    sample_nbr=sampling_number)
-
+        loss = self.net.sample_elbo(inputs=_data_points, labels=_labels, criterion=criterion, sample_nbr=sampling_number)
         acc = self.test(data=_data_points, labels=_labels, samples=sampling_number)
         loss.backward()
         self.optimizer.step()
@@ -187,7 +242,7 @@ class Model:
 
         return loss, acc
 
-    def test(self, data, labels, samples: int = 3, std_multiplier: float = 2, criterion=nn.BCELoss) -> (float, float, float):
+    def test(self, data, labels, samples: int = 3, std_multiplier: float = 2) -> (float, float, float):
         was_training = self.net.training
         self.net.eval()
 
@@ -296,20 +351,24 @@ class Model:
 
 
 def main():
-    hyper_params = HyperParams(hidden_width=128, learning_rate=0.001)
+    hyper_params = HyperParams(hidden_width=200, learning_rate=0.000_1)
 
-    bayesian_model = Model(BayesianNeuralNetwork, optim.Adam, "data/medium_model_with_scv.pth", hyper_params=hyper_params)
+    bayesian_model = Model(BayesianNeuralNetwork, optim.Adam, "data/undersampled_medium_model_with_scv.pth", hyper_params=hyper_params)
     bayesian_model.count_parameters()
 
-    data_path = CONTAINER_DIR + "/Datasets/creditcard.csv"
+    data_path = r"Q:\MichaelsStuff\EngMaths\Year4\AppliedDataScience\creditcard.csv"
 
     train_data = pd.read_csv(data_path).astype(np.float32)
 
     x = train_data.drop("Class", axis=1)
     y = train_data["Class"]
 
+    train, test = train_test_split(x, test_size=0.2)
+
     bayesian_model.unlock()
-    bayesian_model.train(x, y, number_of_epochs=300, batch_size=256)
+    bayesian_model.train_subsampled(x.to_numpy(), y.to_numpy(), number_of_epochs=300, batch_size=256)
+
+    print("test scores:", bayesian_model.test(test))
 
 
 if __name__ == "__main__":
