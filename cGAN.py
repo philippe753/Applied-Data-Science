@@ -5,6 +5,9 @@ from keras import backend, Model
 import pandas as pd
 import numpy as np
 
+import os
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+
 
 class HyperParameters:
     def __init__(self, latent_dim: int=50, learning_rate=1e-5):
@@ -17,12 +20,14 @@ class ConditionalGAN:
         self.labels = labels
         self.generator = g_model
         self.discriminator = d_model
+
         self.hyper_parameters = hyper_parameters
 
         opt = keras.optimizers.Adam(lr=hyper_parameters.learning_rate)
-        self.generator.compile(loss="binary_crossentropy", optimizer=opt, metrics='accuracy')
+        self.generator.compile(loss=self.custom_loss, optimizer=opt, metrics='accuracy')
 
         self.model = combine_gan(g_model, d_model)
+        self.model.trainable = True
 
     def train(self, data, epochs: int=100, batch_size: int=64):
         bat_per_epo = int(data.shape[0] / batch_size)
@@ -31,18 +36,21 @@ class ConditionalGAN:
         for i in range(epochs):
             for j in range(bat_per_epo):
                 d_loss1, d_loss2, g_loss = self.train_mini_batch(data, batch_size, half_batch)
-                self.print_loss(i, j, bat_per_epo, d_loss1, d_loss2, g_loss)
+
+                if j % 100 == 0:
+                    self.print_loss(i, j, bat_per_epo, d_loss1, d_loss2, g_loss)
         self.save()
 
     def train_mini_batch(self, data, batch_size: int, half_batch_size: int) -> (float, float, float):
         [X_real, labels_real], y_real = generate_real_samples(data, self.labels, half_batch_size)
         [X_fake, labels], y_fake = generate_fake_samples(self.generator, self.hyper_parameters.latent_dim, half_batch_size)
-        d_loss1, _ = self.discriminator.train_obatch_size([X_real, labels_real], y_real)
-        d_loss2, _ = self.discriminator.train_obatch_size([X_fake, labels], y_fake)
-        # prepare points in latent space as input for the generator
+        d_loss1, _ = self.discriminator.train_on_batch([X_real, labels_real], y_real)
+        d_loss2, _ = self.discriminator.train_on_batch([X_fake, labels], y_fake)
+
+        # Prepare points in latent space as input for the generator
         [z_input, labels_input] = generate_latent_points(self.hyper_parameters.latent_dim, batch_size)
         y_gan = np.ones((batch_size, 1))
-        _, g_loss = self.generator.train_obatch_size([z_input, labels_input], y_gan)
+        _, g_loss = self.generator.train_on_batch([z_input, labels_input], y_gan)
 
         return d_loss1, d_loss2, g_loss
 
@@ -97,7 +105,7 @@ def main():
     # create the generator
     g_model = generator(hyper_params.latent_dim)
 
-    philippe = ConditionalGAN(d_model, g_model, labels=labels, hyper_parameters=hyper_params)
+    philippe = ConditionalGAN(g_model, d_model, labels=labels, hyper_parameters=hyper_params)
     philippe.train(dataset)
 
 

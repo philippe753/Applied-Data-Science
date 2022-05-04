@@ -36,11 +36,7 @@ def generate_real_samples(dataset, labels, n_samples):
 
 def generate_fake_samples(g_model, latent_dim, n_samples):
     z_input, labels_input = generate_latent_points(latent_dim, n_samples)
-    # z_input = np.reshape(z_input, (32, -1))
-    # print('z_input-------------')
-    # print(z_input)
-    print("Shapes:")
-    print(z_input.shape, labels_input.shape)
+
     datapoints = g_model.predict([z_input, labels_input])
     # create class labels
     datapoints = tf.reshape(datapoints, [n_samples, 28])
@@ -57,7 +53,6 @@ def get_intermediate_layer(d_model):
 
 
 def feature_matching(d_model, g_model):
-
     get_intermediate_layer_output = get_intermediate_layer()
 
 
@@ -78,8 +73,6 @@ def discriminator_model():
     model.compile(loss='binary_crossentropy',
                   optimizer=opt, metrics='accuracy')
     return model
-
-# define the standalone discriminator model
 
 
 def discriminator(n_classes: int=2):  # in_shape=(1,28)
@@ -112,7 +105,7 @@ def discriminator(n_classes: int=2):  # in_shape=(1,28)
     return model_dis
 
 
-def generator(laten_dim, n_classes=2):
+def generator(latent_dim, n_classes=2):
 
     model = keras.Sequential(
         [
@@ -124,9 +117,9 @@ def generator(laten_dim, n_classes=2):
         ]
     )
 
-    noise = layers.Input(shape=(laten_dim,))
+    noise = layers.Input(shape=(latent_dim,))
     label = layers.Input(shape=(1,), dtype='int32')
-    label_embedding = layers.Flatten()(layers.Embedding(n_classes, laten_dim)(label))
+    label_embedding = layers.Flatten()(layers.Embedding(n_classes, latent_dim)(label))
     model_input = layers.multiply([noise, label_embedding])
     gen_sample = model(model_input)
     model_f = Model([noise, label], gen_sample, name="Generator")
