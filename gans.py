@@ -100,22 +100,19 @@ def discriminator(n_classes: int=2):  # in_shape=(1,28)
 
 def generator(latent_dim, n_classes=2):
 
-    model = keras.Sequential(
-        [
-            layers.Dense(128, activation='relu'),
-            layers.Dropout(0.2),
-            layers.Dense(64, activation='relu', name='intermediate_layer'),
-            layers.Dropout(0.2),
-            layers.Dense(28, activation='tanh')
-        ]
-    )
-
     noise = layers.Input(shape=(latent_dim,))
     label = layers.Input(shape=(1,), dtype='int32')
+
     label_embedding = layers.Flatten()(layers.Embedding(n_classes, latent_dim)(label))
     model_input = layers.multiply([noise, label_embedding])
-    gen_sample = model(model_input)
-    model_f = Model([noise, label], gen_sample, name="Generator")
+
+    layer = layers.Dense(128, activation='relu')(model_input)
+    layer = layers.Dropout(0.2)(layer)
+    layer = layers.Dense(64, activation='relu', name='intermediate_layer')(layer)
+    layer = layers.Dropout(0.2)(layer)
+    final = layers.Dense(28, activation='tanh')(layer)
+
+    model_f = Model([noise, label], final, name="Generator")
     return model_f
 
 
