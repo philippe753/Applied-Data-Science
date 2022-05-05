@@ -78,9 +78,11 @@ class ConditionalGAN:
         self.generator.save('cgan_generator2.h5')
         self.discriminator.save('cgan_discriminator2.h5')
 
-    def load(self, path: str) -> ConditionalGAN:
+    def load(self, path: str):
+        print("Loading Model...")
         self.model.load_weights(path)
-
+        print("Model loaded")
+        return None
 
     def feature_matching_loss(self, data, z):
         """ Binary Cross Entropy Feature Matching Loss """
