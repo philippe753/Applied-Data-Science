@@ -1,3 +1,4 @@
+from __future__ import annotations
 import keras.losses
 import tensorflow
 
@@ -33,7 +34,7 @@ class ConditionalGAN:
 
         keras.utils.plot_model(self.model, to_file="model3.png", show_shapes=True, show_dtype=True)
 
-    def train(self, data, epochs: int=100, batch_size: int=64):
+    def train(self, data, epochs: int = 100, batch_size: int = 64):
         bat_per_epo = int(data.shape[0] / batch_size)
         half_batch = int(batch_size / 2)
 
@@ -42,43 +43,44 @@ class ConditionalGAN:
                 final_loss, d_loss1, d_loss2 = self.train_mini_batch(data, batch_size, half_batch)
 
                 if j % 100 == 0:
-                    self.print_loss(i, j, bat_per_epo, d_loss1, d_loss2)
-        self.save()
+                    self.print_loss(i, j, bat_per_epo, d_loss1, d_loss2, final_loss)
+            self.save()
 
     def train_mini_batch(self, data, batch_size: int, half_batch_size: int) -> (float, float, float):
-        [X_real, labels_real], y_real = generate_real_samples(data, self.labels, half_batch_size)
-        [X_fake, labels], y_fake = generate_fake_samples(self.generator, self.hyper_parameters.latent_dim,
-                                                         half_batch_size)
+        # Prepare points in latent space as input for the generator
+        # [z_input, labels_input] = generate_latent_points(self.hyper_parameters.latent_dim, batch_size)
+        # y_gan = np.ones((batch_size, 1))
 
         with tensorflow.GradientTape() as tape:
-            d_loss1, _ = self.discriminator.train_on_batch([X_real, labels_real], y_real)
-            left_bit = self.discriminator.get_layer("intermediate_layer").output
+            [X_real, labels_real], y_real = generate_real_samples(data, self.labels, half_batch_size)
+            [X_fake, labels], y_fake = generate_fake_samples(self.generator, self.hyper_parameters.latent_dim,
+                                                             half_batch_size)
+            pred_1, feature_vector1 = self.discriminator([X_real, backend.constant(labels_real)])
+            pred_2, feature_vector2 = self.discriminator([X_fake, backend.constant(labels)])
 
-            d_loss2, _ = self.discriminator.train_on_batch([X_fake, labels], y_fake)
-            left_bit += self.discriminator.get_layer("intermediate_layer").output
+            fm_loss = keras.losses.MeanSquaredError()(feature_vector1, feature_vector2)
 
-            left_bit /= 2
+            d_loss1 = keras.losses.BinaryCrossentropy(from_logits=True)(pred_1,  y_real)
+            d_loss2 = keras.losses.BinaryCrossentropy(from_logits=True)(pred_2,  y_fake)
 
-            # Prepare points in latent space as input for the generator
-            [z_input, labels_input] = generate_latent_points(self.hyper_parameters.latent_dim, batch_size)
-            y_gan = np.ones((batch_size, 1))
-            output = self.generator([z_input, labels_input], y_gan)
-
-            right_bit = self.discriminator(output)
-
-            fm_loss = backend.sqrt(backend.square(left_bit - right_bit))
-            fm_loss = backend.sum(fm_loss)
+            fm_loss = tensorflow.cast(fm_loss, dtype=tensorflow.float32)
+            d_loss1 = tensorflow.cast(d_loss1, dtype=tensorflow.float32)
+            d_loss2 = tensorflow.cast(d_loss2, dtype=tensorflow.float32)
 
             final_loss = fm_loss + (d_loss1 + d_loss2) / 2
-
-        gradients = tape.gradient(final_loss, self.model.trainable_weights)
-        self.opt.apply(zip(gradients, self.model.trainable_weights))
+            # print("Trainable weights", self.model.trainable_weights)
+            gradients = tape.gradient(final_loss, self.model.trainable_weights)
+            self.opt.apply_gradients(zip(gradients, self.model.trainable_weights))
 
         return final_loss, d_loss1, d_loss2
 
     def save(self) -> None:
         self.generator.save('cgan_generator2.h5')
         self.discriminator.save('cgan_discriminator2.h5')
+
+    def load(self, path: str) -> ConditionalGAN:
+        self.model.load_weights(path)
+
 
     def feature_matching_loss(self, data, z):
         """ Binary Cross Entropy Feature Matching Loss """
@@ -94,24 +96,17 @@ class ConditionalGAN:
         print(f"FM Loss: {loss}")
         return loss
 
-    def custom_loss(self, y_true, y_pred):
-        bce_d_loss = keras.losses.bce(y_true, y_pred)
-
-        fm_loss = self.model.input
-
-        final_loss =  + bce_d_loss
-        return final_loss
-
     @staticmethod
-    def print_loss(i, j, bat_per_epo, d_loss1, d_loss2, g_loss):
-        print('>%d, %d/%d, d1=%.3f, d2=%.3f g=%.3f' %
-              (i + 1, j + 1, bat_per_epo, d_loss1, d_loss2, g_loss))
+    def print_loss(i, j, bat_per_epo, d_loss1, d_loss2, final_loss):
+        print('>%d, %d/%d, d1=%.3f, d2=%.3f T=%.3f' %
+              (i + 1, j + 1, bat_per_epo, d_loss1, d_loss2, final_loss))
 
 
 def main():
-    hyper_params = HyperParameters(latent_dim=50)
+    hyper_params = HyperParameters(latent_dim=50, learning_rate=0.000_1)
 
-    df = pd.read_csv(r"Q:\MichaelsStuff\EngMaths\Year4\AppliedDataScience\creditcard.csv")
+    df = pd.read_csv(r"C:\Users\Mike Nelhams\OneDrive\Documents\MikesStuff2\Coding\AppliedDataScience\PROJECT"
+                     r"\Applied-Data-Science\Datasets\creditcard.csv")
 
     columns_ = df.columns[2:30]
     dataset = df[columns_]  # X

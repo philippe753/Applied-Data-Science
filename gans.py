@@ -17,27 +17,23 @@ def generate_real_samples(dataset, labels, n_samples):
     # split into images and labels
     # choose random instances
     idx = randint(0, dataset.shape[0], n_samples)
-    # select images and labels\
-    # print('dataset type: ')
-    # print(type(dataset))
-    # print('labels: ')
-    # print(labels)
+
     X = dataset.iloc[idx]
+    output_labels = labels
     if len(labels) == len(dataset):
-        labels = labels[idx]
-    else:
-        labels = labels
+        output_labels = labels[idx]
+
     X = tf.reshape(X, [n_samples, 28])
-    # print("X", np.shape(X))
-    # generate class labels
+
     y = np.ones((n_samples, 1))
-    return [X, labels], y
+    return [X, output_labels], y
 
 
 def generate_fake_samples(g_model, latent_dim, n_samples):
     z_input, labels_input = generate_latent_points(latent_dim, n_samples)
 
-    datapoints = g_model.predict([z_input, labels_input])
+    datapoints = g_model([z_input, labels_input])
+
     # create class labels
     datapoints = tf.reshape(datapoints, [n_samples, 28])
     y = np.zeros((n_samples, 1))
@@ -50,10 +46,6 @@ def get_intermediate_layer(d_model):
     intermediate_layer_model = Model(inputs=d_model.input,
                                      outputs=d_model.get_layer(layer_name).output)
     return intermediate_layer_model
-
-
-def feature_matching(d_model, g_model):
-    get_intermediate_layer_output = get_intermediate_layer()
 
 
 def discriminator_model():
@@ -78,6 +70,7 @@ def discriminator_model():
 def discriminator(n_classes: int=2):  # in_shape=(1,28)
     gen_sample = layers.Input(shape=(28), name="gen_sample")
     label = layers.Input(shape=(1,), dtype='int32', name="label")
+
     label_embedding = layers.Flatten()(layers.Embedding(n_classes, 28)(label))
     model_input = layers.multiply([gen_sample, label_embedding])
 
@@ -89,17 +82,16 @@ def discriminator(n_classes: int=2):  # in_shape=(1,28)
     final = layers.Dense(1, activation='sigmoid')(layer)
 
     model_dis = Model(inputs=[gen_sample, label],
-                      outputs=final, name="Discriminator")
+                      outputs=[final, layer], name="Discriminator")
 
-    opt = keras.optimizers.Adam(lr=1e-5)
-    model_dis.compile(loss='binary_crossentropy',
-                      optimizer=opt, metrics='accuracy')
+    # opt = keras.optimizers.Adam(lr=1e-5)
+    # model_dis.compile(loss='binary_crossentropy',
+    #                   optimizer=opt, metrics='accuracy')
 
     return model_dis
 
 
 def generator(latent_dim, n_classes=2):
-
     noise = layers.Input(shape=(latent_dim,))
     label = layers.Input(shape=(1,), dtype='int32')
 
